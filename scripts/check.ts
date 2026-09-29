@@ -2426,6 +2426,18 @@ check('闭区间为每个目标建边', combA.edges.filter((e) => e.refKey === r
     check('路径核对：组合引用标记', pf.hops[0].combined === true && pf.hops[0].refRaw === '第二条、第四条');
   }
 
+  // 同一份分析快照上反复查询（切换起终点复用索引）：结果一致且互不影响
+  {
+    const snap = pfStore.getSnapshot().analysis;
+    const q1 = findReferencePath(snap, A1, A4);
+    const q2 = findReferencePath(snap, A2, A4);
+    const q3 = findReferencePath(snap, A4, A2);
+    const q4 = findReferencePath(snap, A1, A4);
+    check('路径核对：同快照切换起点查询正确', q2.kind === 'path' && q2.hopsCount === 2, q2.kind);
+    check('路径核对：同快照反向查询不可达', q3.kind === 'no-path', q3.kind);
+    check('路径核对：同快照反复查询结果一致', JSON.stringify(q1) === JSON.stringify(q4));
+  }
+
   // 无路径：第四条（无出边）→ 第一条
   const noPath = findReferencePath(pfStore.getSnapshot().analysis, A4, A1);
   check('路径核对：无路径明确提示', noPath.kind === 'no-path', noPath.kind);
@@ -2479,6 +2491,27 @@ check('闭区间为每个目标建边', combA.edges.filter((e) => e.refKey === r
   check('路径核对：多处引用取正文顺序最先者', mp.kind === 'path');
   if (mp.kind === 'path') {
     check('路径核对：证据为第一处（先参见第三条）', mp.hops[0].sentenceText.includes('先参见第三条'), mp.hops[0].sentenceText);
+  }
+
+  // 同一条对大量重复引用：每处引用只索引一次，证据仍为正文顺序最先者
+  const denseDoc = parseDocument(`密集引用法
+
+第一条
+首引第二条。
+${'再引第二条。'.repeat(30)}
+
+第二条
+参见第三条。
+
+第三条
+终。`).doc;
+  const denseStore = new AppStore({ doc: denseDoc, confirmed: {}, annotations: [] });
+  const dSnap = denseStore.getSnapshot().analysis;
+  const dq = findReferencePath(dSnap, denseDoc.root[0].id, denseDoc.root[2].id);
+  check('路径核对：密集重复引用仍可达', dq.kind === 'path' && dq.hopsCount === 2, dq.kind);
+  if (dq.kind === 'path') {
+    check('路径核对：密集重复引用取首处证据', dq.hops[0].sentenceText === '首引第二条。', dq.hops[0].sentenceText);
+    check('路径核对：密集重复引用句内区间指向原文', dq.hops[0].sentenceText.slice(dq.hops[0].refInSentenceStart, dq.hops[0].refInSentenceEnd) === '第二条');
   }
 
   // 循环不导致重复搜索：一↔二，且二→三；一→三最短 2 跳；去重计数 > 0
@@ -2541,6 +2574,14 @@ check('闭区间为每个目标建边', combA.edges.filter((e) => e.refKey === r
   const afterEv = findReferencePath(evStore.getSnapshot().analysis, e1, e2);
   check('路径核对：正文变化后取新句，不展示旧证据', afterEv.kind === 'path' && afterEv.hops[0].sentenceText === '前文补充，引用第二条办理。' && !afterEv.hops[0].sentenceText.startsWith('引用第二条'), afterEv.kind === 'path' ? afterEv.hops[0].sentenceText : '');
   check('路径核对：句内相对区间仍指向引用原文', afterEv.kind === 'path' && afterEv.hops[0].sentenceText.slice(afterEv.hops[0].refInSentenceStart, afterEv.hops[0].refInSentenceEnd) === '第二条');
+
+  // 撤销 / 重做后按当前分析重算：索引随快照更新，不混用旧证据
+  evStore.undo();
+  const afterUndo = findReferencePath(evStore.getSnapshot().analysis, e1, e2);
+  check('路径核对：撤销后回到原句证据', afterUndo.kind === 'path' && afterUndo.hops[0].sentenceText === '引用第二条。', afterUndo.kind === 'path' ? afterUndo.hops[0].sentenceText : '');
+  evStore.redo();
+  const afterRedo = findReferencePath(evStore.getSnapshot().analysis, e1, e2);
+  check('路径核对：重做后取新句证据', afterRedo.kind === 'path' && afterRedo.hops[0].sentenceText === '前文补充，引用第二条办理。', afterRedo.kind === 'path' ? afterRedo.hops[0].sentenceText : '');
 
   // 条内自指边不参与条款间路径（本条以绝对形式回指本条不产生自环边）
   const selfDoc = parseDocument(`自指路径法
