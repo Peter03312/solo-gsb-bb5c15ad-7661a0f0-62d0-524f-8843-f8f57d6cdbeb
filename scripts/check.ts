@@ -52,7 +52,7 @@ import {
   reconfirmIssueException,
   sanitizeIssueExceptions,
 } from '../src/lib/exception';
-import { findReferencePath } from '../src/lib/pathfind';
+import { findReferencePath, getPathIndex } from '../src/lib/pathfind';
 import { boundaryOffset, linearText, type SeqNodeAdapter } from '../src/lib/selection';
 import {
   validateClauseDocument,
@@ -2576,6 +2576,97 @@ check('闭区间为每个目标建边', combA.edges.filter((e) => e.refKey === r
   const pureJson = JSON.stringify(pureA);
   findReferencePath(pureA, pfDoc.root[0].id, pfDoc.root[3].id);
   check('路径核对：不修改传入分析', JSON.stringify(pureA) === pureJson);
+}
+
+// ---- 路径核对索引：按分析快照构建并复用、每处引用只索引一次、起终点切换不重建、变化后按新快照取证 ----
+{
+  const idxText = `索引复用法
+
+第一条
+先参见第三条、第二条。
+再引用第三条。
+
+第二条
+参见第三条。
+
+第三条
+终。`;
+  const idxStore = new AppStore({ doc: parseDocument(idxText).doc, confirmed: {}, annotations: [] });
+  const iA1 = idxStore.getSnapshot().doc.root[0].id;
+  const iA2 = idxStore.getSnapshot().doc.root[1].id;
+  const iA3 = idxStore.getSnapshot().doc.root[2].id;
+
+  const ana1 = idxStore.getSnapshot().analysis;
+  const idx1 = getPathIndex(ana1);
+  check('路径索引：同一快照重复获取复用同一索引', getPathIndex(ana1) === idx1);
+  check(
+    '路径索引：每处引用只索引一次',
+    idx1.occByKey.size === ana1.occurrences.length,
+    `${idx1.occByKey.size}/${ana1.occurrences.length}`,
+  );
+  const adjFromA1 = idx1.adj.get(iA1) ?? [];
+  check(
+    '路径索引：同一条对多处引用只保留一条邻接边',
+    adjFromA1.filter((x) => x.to === iA3).length === 1,
+  );
+  check(
+    '路径索引：邻接按目标条文档顺序排列',
+    adjFromA1.map((x) => x.to).join(',') === [iA2, iA3].join(','),
+  );
+
+  // 起终点切换（含反向查询）反复进行：索引保持复用，不随查询重建
+  const q1 = findReferencePath(ana1, iA1, iA3);
+  const q2 = findReferencePath(ana1, iA2, iA3);
+  const q3 = findReferencePath(ana1, iA3, iA1);
+  check('路径索引：起终点切换反复查询不重建索引', getPathIndex(ana1) === idx1);
+  check(
+    '路径索引：切换后各查询结果正确',
+    q1.kind === 'path' && q2.kind === 'path' && q3.kind === 'no-path',
+    `${q1.kind}/${q2.kind}/${q3.kind}`,
+  );
+  check(
+    '路径索引：同条对证据取正文顺序最早的组合引用',
+    q1.kind === 'path' && q1.hops[0].combined && q1.hops[0].sentenceText.includes('先参见第三条、第二条'),
+    q1.kind === 'path' ? q1.hops[0].sentenceText : q1.kind,
+  );
+  const q1again = findReferencePath(ana1, iA1, iA3);
+  check(
+    '路径索引：重复查询结果一致',
+    q1.kind === 'path' &&
+      q1again.kind === 'path' &&
+      q1again.hops[0].refKey === q1.hops[0].refKey &&
+      q1again.hops[0].sentenceText === q1.hops[0].sentenceText,
+  );
+
+  // 正文变化 → 新分析快照：索引重建，证据取自当前正文
+  idxStore.updateNodeText(idxStore.getSnapshot().doc.root[0].children[0].id, '改动后参见第三条。');
+  const ana2 = idxStore.getSnapshot().analysis;
+  const idx2 = getPathIndex(ana2);
+  check('路径索引：正文变化后索引随新快照重建', ana2 !== ana1 && idx2 !== idx1);
+  const q4 = findReferencePath(ana2, iA1, iA3);
+  check(
+    '路径索引：新快照证据取自当前正文',
+    q4.kind === 'path' && q4.hops[0].sentenceText === '改动后参见第三条。',
+    q4.kind === 'path' ? q4.hops[0].sentenceText : q4.kind,
+  );
+
+  // 撤销 / 重做：分别按恢复 / 当前快照重建索引与取证，不混用旧快照
+  idxStore.undo();
+  const ana3 = idxStore.getSnapshot().analysis;
+  const q5 = findReferencePath(ana3, iA1, iA3);
+  check(
+    '路径索引：撤销后按恢复的快照重建索引并取证',
+    getPathIndex(ana3) !== idx1 && q5.kind === 'path' && q5.hops[0].sentenceText.includes('先参见第三条、第二条'),
+    q5.kind === 'path' ? q5.hops[0].sentenceText : q5.kind,
+  );
+  idxStore.redo();
+  const ana4 = idxStore.getSnapshot().analysis;
+  const q6 = findReferencePath(ana4, iA1, iA3);
+  check(
+    '路径索引：重做后按当前快照取证',
+    q6.kind === 'path' && q6.hops[0].sentenceText === '改动后参见第三条。',
+    q6.kind === 'path' ? q6.hops[0].sentenceText : q6.kind,
+  );
 }
 
 // ---- 整份文档替换事务：撤销恢复替换前整套状态、重做恢复替换后整套状态；跨文档临时产物失效 ----

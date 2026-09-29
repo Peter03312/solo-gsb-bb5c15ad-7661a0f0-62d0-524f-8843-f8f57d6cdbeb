@@ -12,6 +12,7 @@ import {
  * 引用路径核对：选起点条与终点条，在当前已确认的条级引用边上找一条跳数最少的有向路径。
  * 结果随 store 每次提交（正文 / 结构 / 歧义确认变化）经 useMemo 即时重算，
  * 所有句子与偏移都取自当前分析——不缓存旧结果，因此不会展示旧证据。
+ * 条级邻接与证据索引按分析快照复用（getPathIndex）：切换起点 / 终点只重算 BFS，不重建索引。
  */
 export function PathCheckPanel() {
   const { store } = useApp();
